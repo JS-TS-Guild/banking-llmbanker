@@ -39,6 +39,11 @@ class Bank {
   getAccount(accountId: BankAccountId): BankAccount {
     const account = this.accounts.get(accountId);
     if (!account) {
+      // Try to get from GlobalRegistry as fallback
+      const globalAccount = GlobalRegistry.getAccount(accountId);
+      if (globalAccount && globalAccount.getBankId() === this.id) {
+        return globalAccount;
+      }
       throw new Error(`Account ${accountId} not found in bank ${this.id}`);
     }
     return account;
@@ -58,17 +63,34 @@ class Bank {
       throw new Error('Sender has no accounts in this bank');
     }
 
-    // Find an account with sufficient funds
-    let fromAccount: BankAccount | null = null;
+    // Try to find sufficient funds across all accounts
+    let remainingAmount = amount;
+    const accountsToUse: { account: BankAccount; amount: number }[] = [];
+
     for (const accountId of fromUserAccounts) {
       const account = this.getAccount(accountId);
-      if (account.hasSufficientFunds(amount)) {
-        fromAccount = account;
+      
+      if (this.isNegativeAllowed) {
+        // For banks that allow negative balance, use the first account and let it go negative
+        accountsToUse.push({ account, amount: remainingAmount });
+        remainingAmount = 0;
         break;
+      } else {
+        // For banks that don't allow negative balance, only use positive balances
+        const availableBalance = account.getBalance();
+        if (availableBalance > 0) {
+          const amountToUse = Math.min(remainingAmount, availableBalance);
+          accountsToUse.push({ account, amount: amountToUse });
+          remainingAmount -= amountToUse;
+          
+          if (remainingAmount <= 0) {
+            break;
+          }
+        }
       }
     }
 
-    if (!fromAccount) {
+    if (remainingAmount > 0) {
       throw new Error('Insufficient funds');
     }
 
@@ -87,9 +109,11 @@ class Bank {
 
       const toAccount = toBank.getAccount(toUserAccounts[0]); // Use first account
       
-      // Perform the transfer
-      fromAccount.withdraw(amount);
-      toAccount.deposit(amount);
+      // Perform the transfers from multiple accounts
+      for (const { account, amount: transferAmount } of accountsToUse) {
+        account.withdraw(transferAmount);
+        toAccount.deposit(transferAmount);
+      }
     } else {
       // Transfer within same bank
       const toUserAccounts = toUser.getAccountsInBank(this.id);
@@ -99,9 +123,11 @@ class Bank {
 
       const toAccount = this.getAccount(toUserAccounts[0]); // Use first account
       
-      // Perform the transfer
-      fromAccount.withdraw(amount);
-      toAccount.deposit(amount);
+      // Perform the transfers from multiple accounts
+      for (const { account, amount: transferAmount } of accountsToUse) {
+        account.withdraw(transferAmount);
+        toAccount.deposit(transferAmount);
+      }
     }
   }
 }
